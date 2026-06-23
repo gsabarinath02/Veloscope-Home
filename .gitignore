@@ -1,0 +1,7 @@
+.env
+.env.local
+node_modules/
+dist/
+screenshots/
+server/data/tickets/tickets.json
+server/data/registrations/registrations.json
