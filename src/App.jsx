@@ -634,6 +634,9 @@ function ChatWidget({
   const isSpeakingRef = useRef(false);
   const speechStartedAtRef = useRef(0);
   const bargeInCooldownRef = useRef(0);
+  const noiseFloorRef = useRef(0.012);
+  const voiceFrameCountRef = useRef(0);
+  const silenceFrameCountRef = useRef(0);
   const lastVoiceAtRef = useRef(0);
   const segmentStartRef = useRef(0);
   const isSendingRef = useRef(false);
@@ -921,6 +924,8 @@ function ChatWidget({
     conversationBusyRef.current = false;
     isCapturingRef.current = false;
     isSpeakingRef.current = false;
+    voiceFrameCountRef.current = 0;
+    silenceFrameCountRef.current = 0;
     setAutoVoiceEnabled(false);
     setVoiceReply(false);
     stopSpeakingNow();
@@ -1021,6 +1026,7 @@ function ChatWidget({
     isCapturingRef.current = true;
     segmentStartRef.current = performance.now();
     lastVoiceAtRef.current = segmentStartRef.current;
+    silenceFrameCountRef.current = 0;
 
     recorder.ondataavailable = (event) => {
       if (event.data.size) chunksRef.current.push(event.data);
@@ -1036,7 +1042,7 @@ function ChatWidget({
     recorder.start(180);
     setVoiceStatus("capturing");
     setAssistantState("listening");
-    setLiveTranscript("I am listening...");
+    setLiveTranscript("Listening... pause, or tap Send voice now.");
   }
 
   function finishVoiceSegment() {
@@ -1045,9 +1051,25 @@ function ChatWidget({
 
     isCapturingRef.current = false;
     conversationBusyRef.current = true;
+    voiceFrameCountRef.current = 0;
+    silenceFrameCountRef.current = 0;
     setVoiceStatus("transcribing");
     setAssistantState("processing");
     recorder.stop();
+  }
+
+  function handleVoiceModeClick() {
+    if (!autoVoiceEnabled) {
+      void startNaturalConversation();
+      return;
+    }
+
+    if (voiceStatus === "capturing") {
+      finishVoiceSegment();
+      return;
+    }
+
+    stopNaturalConversation();
   }
 
   function monitorVoice(dataArray) {
@@ -1062,8 +1084,15 @@ function ChatWidget({
     }
     const rms = Math.sqrt(sum / dataArray.length);
     const now = performance.now();
-    const hasVoice = rms > 0.026;
-    const hasBargeInVoice = rms > 0.038;
+    const noiseFloor = noiseFloorRef.current;
+    const voiceThreshold = Math.max(0.022, noiseFloor + 0.018);
+    const bargeInThreshold = Math.max(0.045, noiseFloor + 0.035);
+    const hasVoice = rms > voiceThreshold;
+    const hasBargeInVoice = rms > bargeInThreshold;
+
+    if (!isCapturingRef.current && !isSpeakingRef.current && !isSendingRef.current && !conversationBusyRef.current) {
+      noiseFloorRef.current = noiseFloor * 0.96 + Math.min(rms, 0.05) * 0.04;
+    }
 
     if (
       isSpeakingRef.current &&
@@ -1083,14 +1112,21 @@ function ChatWidget({
       beginVoiceSegment();
     } else if (!conversationBusyRef.current && !isSendingRef.current) {
       if (hasVoice) {
+        voiceFrameCountRef.current += 1;
+        silenceFrameCountRef.current = 0;
         lastVoiceAtRef.current = now;
-        beginVoiceSegment();
-      } else if (
-        isCapturingRef.current &&
-        now - lastVoiceAtRef.current > 720 &&
-        now - segmentStartRef.current > 420
-      ) {
-        finishVoiceSegment();
+        if (voiceFrameCountRef.current >= 2) beginVoiceSegment();
+      } else {
+        voiceFrameCountRef.current = 0;
+        if (isCapturingRef.current) silenceFrameCountRef.current += 1;
+      }
+
+      if (isCapturingRef.current) {
+        const silenceLongEnough = now - lastVoiceAtRef.current > 850 && silenceFrameCountRef.current > 8;
+        const utteranceTooLong = now - segmentStartRef.current > 7800;
+        if ((silenceLongEnough && now - segmentStartRef.current > 500) || utteranceTooLong) {
+          finishVoiceSegment();
+        }
       }
     }
 
@@ -1353,12 +1389,12 @@ function ChatWidget({
           <button
             type="button"
             className={cls("mic-button", "conversation-button", autoVoiceEnabled && "active")}
-            onClick={autoVoiceEnabled ? () => stopNaturalConversation() : startNaturalConversation}
+            onClick={handleVoiceModeClick}
           >
-            {autoVoiceEnabled ? <MicOff size={18} /> : <Mic size={18} />}
+            {autoVoiceEnabled ? (voiceStatus === "capturing" ? <Send size={18} /> : <MicOff size={18} />) : <Mic size={18} />}
             {autoVoiceEnabled
               ? voiceStatus === "capturing"
-                ? "Listening..."
+                ? "Send voice now"
                 : voiceStatus === "transcribing"
                   ? "Understanding..."
                   : voiceStatus === "speaking"

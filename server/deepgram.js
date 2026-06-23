@@ -16,8 +16,7 @@ export async function transcribeAudio({ audio, contentType }) {
     punctuate: "true",
     language: "en",
     numerals: "true",
-    filler_words: "false",
-    alternatives: "3"
+    filler_words: "false"
   });
   const response = await fetch(`https://api.deepgram.com/v1/listen?${params.toString()}`, {
     method: "POST",
