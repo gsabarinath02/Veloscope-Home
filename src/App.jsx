@@ -169,13 +169,66 @@ function inferRaceCategory(text) {
   return "";
 }
 
-function speakText(text) {
+let activeVoiceAudio = null;
+let activeVoiceAudioUrl = "";
+
+function fallbackSpeakText(text) {
   if (!("speechSynthesis" in window)) return;
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text.replace(/\s+/g, " ").slice(0, 260));
   utterance.rate = 0.96;
   utterance.pitch = 1;
   window.speechSynthesis.speak(utterance);
+}
+
+async function speakText(text, { useDeepgram = true } = {}) {
+  const cleanText = String(text || "").replace(/\s+/g, " ").trim().slice(0, 900);
+  if (!cleanText) return;
+
+  if (activeVoiceAudio) {
+    activeVoiceAudio.pause();
+    activeVoiceAudio = null;
+  }
+  if (activeVoiceAudioUrl) {
+    URL.revokeObjectURL(activeVoiceAudioUrl);
+    activeVoiceAudioUrl = "";
+  }
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+
+  if (!useDeepgram) {
+    fallbackSpeakText(cleanText);
+    return;
+  }
+
+  try {
+    const response = await fetch("/api/speak", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: cleanText })
+    });
+
+    if (!response.ok) throw new Error("TTS request failed");
+
+    const audioBlob = await response.blob();
+    const audioUrl = URL.createObjectURL(audioBlob);
+    const audio = new Audio(audioUrl);
+    activeVoiceAudio = audio;
+    activeVoiceAudioUrl = audioUrl;
+
+    const cleanup = () => {
+      if (activeVoiceAudio === audio) activeVoiceAudio = null;
+      if (activeVoiceAudioUrl === audioUrl) {
+        URL.revokeObjectURL(audioUrl);
+        activeVoiceAudioUrl = "";
+      }
+    };
+
+    audio.onended = cleanup;
+    audio.onerror = cleanup;
+    await audio.play();
+  } catch {
+    fallbackSpeakText(cleanText);
+  }
 }
 
 function nextMissingField(details) {
@@ -359,7 +412,7 @@ function ChatWidget({
         setOpen(true);
         setAssistantState("awake");
         setVoiceStatus("awake");
-        speakText("How can I help you today?");
+        speakText("How can I help you today?", { useDeepgram: config?.deepgramConfigured });
         if (afterWake && afterWake.toLowerCase() !== "velo") {
           sendMessage(afterWake, { fromVoice: true });
         }
@@ -379,7 +432,7 @@ function ChatWidget({
     };
     recognitionRef.current = recognition;
     return () => recognition.stop();
-  }, [wakeEnabled]);
+  }, [wakeEnabled, config?.deepgramConfigured]);
 
   function appendAssistant(content, options = {}) {
     setMessages((current) => [
@@ -397,7 +450,7 @@ function ChatWidget({
         providerWarning: options.providerWarning
       }
     ]);
-    if (voiceReply) speakText(content);
+    if (voiceReply) speakText(content, { useDeepgram: config?.deepgramConfigured });
   }
 
   function updateRegistrationDetails(patch) {
@@ -590,7 +643,7 @@ function ChatWidget({
           providerWarning: payload.providerWarning
         }
       ]);
-      if (voiceReply) speakText(payload.answer);
+      if (voiceReply) speakText(payload.answer, { useDeepgram: config?.deepgramConfigured });
     } catch {
       setMessages((current) => [
         ...current,
@@ -687,7 +740,13 @@ function ChatWidget({
             {voiceStatus === "listening" ? <MicOff size={18} /> : <Mic size={18} />}
             {voiceStatus === "listening" ? "Stop" : "Push to talk"}
           </button>
-          <button type="button" className={cls("speak-toggle", voiceReply && "active")} onClick={() => setVoiceReply((value) => !value)}>
+          <button
+            type="button"
+            className={cls("speak-toggle", voiceReply && "active")}
+            onClick={() => setVoiceReply((value) => !value)}
+            aria-label={voiceReply ? "Turn voice reply off" : "Turn voice reply on"}
+            title={config?.deepgramConfigured ? "Voice reply uses Deepgram TTS" : "Voice reply uses browser speech fallback"}
+          >
             <Volume2 size={17} />
           </button>
           {(liveTranscript || voiceError) && (

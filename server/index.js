@@ -2,7 +2,7 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import { isDeepgramConfigured, isOpenAIConfigured } from "./env.js";
 import { answerWithOpenAI } from "./assistant.js";
-import { transcribeAudio } from "./deepgram.js";
+import { synthesizeSpeech, transcribeAudio } from "./deepgram.js";
 import { createRegistration } from "./registrations.js";
 import { createTicket } from "./tickets.js";
 import { isTavilyConfigured, searchWithTavily } from "./tavily.js";
@@ -55,6 +55,36 @@ app.post("/api/transcribe", express.raw({ type: "*/*", limit: "25mb" }), async (
     return res.status(500).json({
       error: "Transcription failed",
       transcript: ""
+    });
+  }
+});
+
+app.post("/api/speak", async (req, res) => {
+  try {
+    const text = String(req.body?.text || "").trim();
+    if (!text) {
+      return res.status(400).json({ error: "Text is required" });
+    }
+
+    const result = await synthesizeSpeech({ text });
+    if (!result.configured) {
+      return res.status(503).json(result);
+    }
+
+    if (!result.audio) {
+      return res.status(400).json({ error: result.error || "Speech audio was not generated" });
+    }
+
+    res.setHeader("Content-Type", result.contentType);
+    res.setHeader("Cache-Control", "no-store");
+    return res.send(result.audio);
+  } catch (error) {
+    console.error("Deepgram TTS request failed", {
+      message: error?.message,
+      name: error?.name
+    });
+    return res.status(500).json({
+      error: "Speech synthesis failed"
     });
   }
 });

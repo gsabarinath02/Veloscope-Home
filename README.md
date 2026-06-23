@@ -1,6 +1,6 @@
 # Eventforce AI Assistant Demo
 
-A client-ready Veloscope/Eventforce-style website with a real OpenAI-backed Velo assistant, local marathon document retrieval, Tavily web search, Deepgram voice transcription, voice-guided registration, QR generation, and automatic support ticket creation for questions the assistant cannot answer.
+A client-ready Veloscope/Eventforce-style website with a real OpenAI-backed Velo assistant, local marathon document retrieval, Tavily web search, Deepgram voice transcription, Deepgram text-to-speech voice replies, voice-guided registration, QR generation, and automatic support ticket creation for questions the assistant cannot answer.
 
 ## Run
 
@@ -69,5 +69,5 @@ DEMO_DATA_DIR=/data
 
 - Document Q&A: event date, race categories, fees, refunds, bib collection, timing chip, medical support, parking, organizer details, and cut-off times.
 - Web Q&A: upcoming marathons, weather, running trends, hydration practices, and recent safety guidance.
-- Voice: push-to-talk sends audio to Deepgram. Browser wake-word support is attempted through Web Speech APIs and falls back to push-to-talk when unavailable.
+- Voice: push-to-talk sends audio to Deepgram Speech-to-Text. Voice replies use Deepgram TTS through `/api/speak`, with browser speech synthesis as a fallback. Browser wake-word support is attempted through Web Speech APIs and falls back to push-to-talk when unavailable.
 - Registration: Velo asks for runner details, fills the form live, stores a mock registration, and generates a QR code.
