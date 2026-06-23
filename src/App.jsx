@@ -217,14 +217,136 @@ function normalizeRegistrationValue(fieldKey, text) {
   }
 
   if (fieldKey === "fullName") {
-    return clean.replace(/^(my name is|this is|i am|i'm)\s+/i, "").trim();
+    return clean.replace(/^(my name is|name is|full name is|this is|i am|i'm)\s+/i, "").trim();
   }
 
   if (fieldKey === "emergencyName") {
-    return clean.replace(/^(it is|it's|my emergency contact is|emergency contact is)\s+/i, "").trim();
+    return clean.replace(/^(it is|it's|name is|my emergency contact is|emergency contact is)\s+/i, "").trim();
   }
 
   return clean;
+}
+
+function getFieldLabel(fieldKey) {
+  return registrationFields.find((field) => field.key === fieldKey)?.label || "detail";
+}
+
+function validateRegistrationValue(fieldKey, value) {
+  const clean = String(value || "").trim();
+  const lower = clean.toLowerCase();
+  const fillerWords = new Set(["hi", "hello", "hey", "ok", "okay", "yes", "yeah", "yep", "no", "need", "none", "confirm"]);
+
+  if (!clean || fillerWords.has(lower)) {
+    return { valid: false, message: `I did not catch your ${getFieldLabel(fieldKey).toLowerCase()}. Please say it again.` };
+  }
+
+  if (fieldKey === "fullName" || fieldKey === "emergencyName") {
+    const hasLetters = /[a-z]/i.test(clean);
+    const hasDigits = /\d/.test(clean);
+    if (!hasLetters || hasDigits || clean.length < 3) {
+      return { valid: false, message: `I need a valid ${getFieldLabel(fieldKey).toLowerCase()}. Please say the name again.` };
+    }
+  }
+
+  if (fieldKey === "phone" || fieldKey === "emergencyPhone") {
+    const digits = clean.replace(/\D/g, "");
+    if (digits.length < 10 || digits.length > 15) {
+      return { valid: false, message: `That phone number looks incomplete. Please say the full 10 digit number again.` };
+    }
+  }
+
+  if (fieldKey === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean)) {
+    return { valid: false, message: "I did not catch a valid email address. Please say or type the email again." };
+  }
+
+  if (fieldKey === "age") {
+    const age = Number(clean);
+    if (!Number.isInteger(age) || age < 5 || age > 90) {
+      return { valid: false, message: "I need a valid runner age between 5 and 90. Please say the age again." };
+    }
+  }
+
+  if (fieldKey === "gender" && !["male", "female", "other"].includes(lower)) {
+    return { valid: false, message: "I did not catch the gender clearly. Please say male, female, or other." };
+  }
+
+  if (fieldKey === "raceCategory" && !["Half Marathon 21.1K", "Open 10K", "Fun Run 5K", "Family Run 3K"].includes(clean)) {
+    return { valid: false, message: "Please choose one race category: Half Marathon 21.1K, Open 10K, Fun Run 5K, or Family Run 3K." };
+  }
+
+  if (fieldKey === "tshirtSize" && !["XS", "S", "M", "L", "XL", "XXL"].includes(clean)) {
+    return { valid: false, message: "I did not catch the T-shirt size. Please say XS, S, M, L, XL, or XXL." };
+  }
+
+  return { valid: true };
+}
+
+function resolveRegistrationField(text) {
+  const lower = text.toLowerCase();
+  if (/\b(full name|name|runner name|participant name|code name)\b/.test(lower)) return "fullName";
+  if (/\b(my phone|phone number|mobile|contact number)\b/.test(lower)) return "phone";
+  if (/\b(email|mail id|email address)\b/.test(lower)) return "email";
+  if (/\b(age)\b/.test(lower)) return "age";
+  if (/\b(gender|sex)\b/.test(lower)) return "gender";
+  if (/\b(category|race|10k|5k|3k|21k|half marathon)\b/.test(lower)) return "raceCategory";
+  if (/\b(t shirt|t-shirt|shirt|size|tee)\b/.test(lower)) return "tshirtSize";
+  if (/\b(emergency contact name|emergency name)\b/.test(lower)) return "emergencyName";
+  if (/\b(emergency contact number|emergency phone|emergency mobile)\b/.test(lower)) return "emergencyPhone";
+  return "";
+}
+
+function extractCorrectionValue(text, fieldKey) {
+  const lower = text.toLowerCase();
+  const fieldHints = [
+    "full name",
+    "runner name",
+    "participant name",
+    "code name",
+    "name",
+    "phone number",
+    "mobile",
+    "contact number",
+    "email address",
+    "email",
+    "mail id",
+    "age",
+    "gender",
+    "race category",
+    "category",
+    "race",
+    "t shirt",
+    "t-shirt",
+    "shirt size",
+    "size",
+    "emergency contact number",
+    "emergency phone",
+    "emergency mobile",
+    "emergency contact name",
+    "emergency name"
+  ];
+
+  const directPatterns = [
+    /\b(?:change|update|set|make|correct)\b.+?\b(?:to|as)\b\s+(.+)$/i,
+    /\b(?:is|as)\b\s+(.+)$/i,
+    /\b(?:my|the)\s+.+?\s+is\s+(.+)$/i
+  ];
+
+  for (const pattern of directPatterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return normalizeRegistrationValue(fieldKey, match[1]);
+  }
+
+  const withoutHints = fieldHints.reduce(
+    (current, hint) => current.replace(new RegExp(`\\b${hint.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "ig"), ""),
+    text
+  );
+  const cleaned = withoutHints
+    .replace(/\b(change|update|set|make|correct|want|need|please|to|as|is|my|the)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!cleaned || cleaned.toLowerCase() === lower.trim()) return "";
+  return normalizeRegistrationValue(fieldKey, cleaned);
 }
 
 function summarizeRegistration(details) {
@@ -651,6 +773,38 @@ function ChatWidget({
     });
   }
 
+  function setRegistrationActiveField(fieldKey) {
+    const flow = { active: true, confirming: false, activeField: fieldKey };
+    registrationFlowRef.current = flow;
+    setRegistrationFlow(flow);
+    onRegistrationFieldChange(fieldKey);
+  }
+
+  function setRegistrationConfirming(details) {
+    const flow = { active: true, confirming: true, activeField: "" };
+    registrationFlowRef.current = flow;
+    setRegistrationFlow(flow);
+    onRegistrationFieldChange("");
+    appendAssistant(`I have all the details. Please review the registration panel and say confirm to generate your registration ID and QR code.\n\n${summarizeRegistration(details)}`, {
+      mode: "registration"
+    });
+  }
+
+  function applyRegistrationField(field, rawValue) {
+    const fieldValue = normalizeRegistrationValue(field.key, rawValue);
+    const validation = validateRegistrationValue(field.key, fieldValue);
+    if (!validation.valid) {
+      setRegistrationActiveField(field.key);
+      appendAssistant(validation.message, { mode: "registration" });
+      return null;
+    }
+
+    const updated = { ...registrationRef.current, [field.key]: fieldValue };
+    registrationRef.current = updated;
+    updateRegistrationDetails({ [field.key]: fieldValue });
+    return updated;
+  }
+
   function startRegistration(question) {
     document.getElementById("registration")?.scrollIntoView({ behavior: "smooth", block: "start" });
     const raceCategory = inferRaceCategory(question);
@@ -678,9 +832,26 @@ function ChatWidget({
 
     if (flowState.confirming) {
       if (!/^(yes|confirm|confirmed|ok|okay|submit|proceed)/i.test(cleanAnswer)) {
-        appendAssistant("No problem. Tell me which detail you want to change, or say confirm when you are ready.", {
-          mode: "registration"
-        });
+        const requestedFieldKey = resolveRegistrationField(cleanAnswer);
+        const requestedField = registrationFields.find((field) => field.key === requestedFieldKey);
+        if (!requestedField) {
+          appendAssistant("No problem. Tell me the exact field you want to change, like name, email, gender, T-shirt size, or emergency number.", {
+            mode: "registration"
+          });
+          return true;
+        }
+
+        const correctionValue = extractCorrectionValue(cleanAnswer, requestedField.key);
+        if (!correctionValue) {
+          setRegistrationActiveField(requestedField.key);
+          appendAssistant(`Sure. What should I put for ${requestedField.label.toLowerCase()}?`, {
+            mode: "registration"
+          });
+          return true;
+        }
+
+        const updated = applyRegistrationField(requestedField, correctionValue);
+        if (updated) setRegistrationConfirming(updated);
         return true;
       }
 
@@ -711,35 +882,19 @@ function ChatWidget({
     const currentDetails = registrationRef.current;
     const field = registrationFields.find((item) => item.key === flowState.activeField) || nextMissingField(currentDetails);
     if (!field) {
-      const confirmingFlow = { active: true, confirming: true, activeField: "" };
-      registrationFlowRef.current = confirmingFlow;
-      setRegistrationFlow(confirmingFlow);
-      onRegistrationFieldChange("");
-      appendAssistant(`I have all the details. Please review the registration panel and say confirm to generate your registration ID and QR code.\n\n${summarizeRegistration(currentDetails)}`, {
-        mode: "registration"
-      });
+      setRegistrationConfirming(currentDetails);
       return true;
     }
 
-    const fieldValue = normalizeRegistrationValue(field.key, cleanAnswer);
-    const updated = { ...currentDetails, [field.key]: fieldValue };
-    registrationRef.current = updated;
-    updateRegistrationDetails({ [field.key]: fieldValue });
+    const updated = applyRegistrationField(field, cleanAnswer);
+    if (!updated) return true;
+
     const nextField = nextMissingField(updated);
     if (nextField) {
-      const nextFlow = { active: true, confirming: false, activeField: nextField.key };
-      registrationFlowRef.current = nextFlow;
-      setRegistrationFlow(nextFlow);
-      onRegistrationFieldChange(nextField.key);
+      setRegistrationActiveField(nextField.key);
       appendAssistant(nextField.question, { mode: "registration" });
     } else {
-      const confirmingFlow = { active: true, confirming: true, activeField: "" };
-      registrationFlowRef.current = confirmingFlow;
-      setRegistrationFlow(confirmingFlow);
-      onRegistrationFieldChange("");
-      appendAssistant(`I have all the details. Please review the registration panel and say confirm to generate your registration ID and QR code.\n\n${summarizeRegistration(updated)}`, {
-        mode: "registration"
-      });
+      setRegistrationConfirming(updated);
     }
     return true;
   }
@@ -802,6 +957,30 @@ function ChatWidget({
     setLiveTranscript("Listening. Speak naturally, then pause.");
   }
 
+  function chooseTranscript(payload) {
+    const candidates = [
+      payload.transcript,
+      ...(payload.alternatives || []).map((alternative) => alternative.transcript)
+    ]
+      .map((candidate) => normalizeSpeech(String(candidate || "")))
+      .filter(Boolean)
+      .filter((candidate, index, all) => all.indexOf(candidate) === index);
+
+    const activeField = registrationFlowRef.current?.activeField;
+    if (activeField) {
+      const field = registrationFields.find((item) => item.key === activeField);
+      if (field) {
+        const matchingCandidate = candidates.find((candidate) => {
+          const normalized = normalizeRegistrationValue(field.key, candidate);
+          return validateRegistrationValue(field.key, normalized).valid;
+        });
+        if (matchingCandidate) return matchingCandidate;
+      }
+    }
+
+    return candidates[0] || "";
+  }
+
   async function transcribeVoiceSegment(blob, contentType) {
     if (!blob.size || blob.size < 800) {
       resumeNaturalListening();
@@ -819,7 +998,7 @@ function ChatWidget({
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Transcription failed");
 
-      const transcript = normalizeSpeech(payload.transcript || "");
+      const transcript = chooseTranscript(payload);
       setLiveTranscript(transcript || "I did not catch that. Please try again.");
       if (transcript) {
         await sendMessageRef.current?.(transcript, { fromVoice: true });
@@ -1058,6 +1237,11 @@ function ChatWidget({
     sendMessage();
   }
 
+  const registrationFocusMode =
+    registrationFlow.active ||
+    registrationFlow.confirming ||
+    registrationFields.some((field) => String(registration[field.key] || "").trim());
+
   return (
     <>
       <button
@@ -1077,7 +1261,10 @@ function ChatWidget({
       </button>
 
       {(autoVoiceEnabled || wakeEnabled) && (
-        <div className={cls("voice-orb", assistantState, wakeEnabled && "wake-on")} aria-label="Velo voice assistant status">
+        <div
+          className={cls("voice-orb", assistantState, wakeEnabled && "wake-on", registrationFocusMode && "registration-focus")}
+          aria-label="Velo voice assistant status"
+        >
           <span />
           <div>
             <strong>{autoVoiceEnabled ? "Voice mode on" : "Say Velo"}</strong>
@@ -1100,7 +1287,7 @@ function ChatWidget({
         </div>
       )}
 
-      <section className={cls("chat-widget", open && "open")} aria-label="Eventforce chatbot">
+      <section className={cls("chat-widget", open && "open", registrationFocusMode && "registration-focus")} aria-label="Eventforce chatbot">
         <div className="chat-topbar">
           <div className="assistant-title">
             <span className="assistant-logo">
@@ -1404,7 +1591,7 @@ function RegistrationPanel({ registration, completedRegistration, activeFieldKey
   const progress = Math.round((completeCount / registrationFields.length) * 100);
 
   return (
-    <section className="registration-demo" id="registration">
+    <section className={cls("registration-demo", completeCount > 0 && "is-live")} id="registration">
       <div className="section-shell registration-grid">
         <div>
           <p className="section-kicker">Voice Registration Demo</p>

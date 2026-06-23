@@ -10,17 +10,23 @@ export async function transcribeAudio({ audio, contentType }) {
   }
 
   const apiKey = getDeepgramApiKey();
-  const response = await fetch(
-    "https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&language=en",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Token ${apiKey}`,
-        "Content-Type": contentType || "audio/webm"
-      },
-      body: audio
-    }
-  );
+  const params = new URLSearchParams({
+    model: "nova-3",
+    smart_format: "true",
+    punctuate: "true",
+    language: "en",
+    numerals: "true",
+    filler_words: "false",
+    alternatives: "3"
+  });
+  const response = await fetch(`https://api.deepgram.com/v1/listen?${params.toString()}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Token ${apiKey}`,
+      "Content-Type": contentType || "audio/webm"
+    },
+    body: audio
+  });
 
   if (!response.ok) {
     const message = await response.text();
@@ -28,14 +34,23 @@ export async function transcribeAudio({ audio, contentType }) {
   }
 
   const data = await response.json();
+  const alternatives = data.results?.channels?.[0]?.alternatives || [];
   const transcript =
-    data.results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim() ||
+    alternatives[0]?.transcript?.trim() ||
     data.results?.utterances?.map((utterance) => utterance.transcript).join(" ").trim() ||
     "";
 
   return {
     configured: true,
     transcript,
+    confidence: alternatives[0]?.confidence || 0,
+    alternatives: alternatives
+      .slice(0, 3)
+      .map((alternative) => ({
+        transcript: alternative.transcript?.trim() || "",
+        confidence: alternative.confidence || 0
+      }))
+      .filter((alternative) => alternative.transcript),
     rawDuration: data.metadata?.duration
   };
 }

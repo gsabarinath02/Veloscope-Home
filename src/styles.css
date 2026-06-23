@@ -800,6 +800,25 @@ a {
   transform: translateY(0) scale(1);
 }
 
+@media (min-width: 1025px) {
+  .chat-widget.registration-focus {
+    right: auto;
+    left: 24px;
+    bottom: 92px;
+    width: min(390px, calc(100vw - 48px));
+    height: min(650px, calc(100vh - 122px));
+    transform-origin: left bottom;
+  }
+
+  .chat-widget.registration-focus.open {
+    transform: translateY(0) scale(1);
+  }
+
+  .voice-orb.registration-focus {
+    left: 426px;
+  }
+}
+
 .chat-topbar {
   display: flex;
   align-items: center;
@@ -1224,6 +1243,7 @@ a {
 .registration-demo {
   padding: 90px 0;
   background: #121111;
+  scroll-margin-top: 96px;
 }
 
 .registration-grid {
@@ -1309,6 +1329,30 @@ a {
   background: #fffaf7;
   color: #171717;
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.32);
+}
+
+@media (min-width: 1025px) {
+  .registration-demo.is-live .runner-form-card {
+    position: fixed;
+    top: 112px;
+    right: 24px;
+    z-index: 43;
+    width: min(640px, calc(100vw - 500px));
+    max-height: calc(100vh - 140px);
+    overflow: auto;
+    animation: liveFormDock 260ms ease both;
+  }
+}
+
+@keyframes liveFormDock {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 
 .runner-form-card::before {
