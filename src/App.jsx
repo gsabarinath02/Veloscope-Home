@@ -69,8 +69,7 @@ const seedMessages = [
     id: "m1",
     role: "assistant",
     mode: "rag",
-    content:
-      "Welcome to Velo, the Eventforce voice assistant. Ask me about Kochi Half Marathon documents, search the web, or say you want to register.",
+    content: "Welcome to Velo, the Eventforce voice assistant. ask me anything you want",
     sources: [{ title: "Kochi Half Marathon 2026 Event Brochure", type: "document" }]
   }
 ];
