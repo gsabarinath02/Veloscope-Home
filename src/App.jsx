@@ -492,7 +492,7 @@ function ChatWidget({
   const [voiceStatus, setVoiceStatus] = useState("idle");
   const [liveTranscript, setLiveTranscript] = useState("");
   const [voiceError, setVoiceError] = useState("");
-  const [voiceReply, setVoiceReply] = useState(true);
+  const [voiceReply, setVoiceReply] = useState(false);
   const [wakeEnabled, setWakeEnabled] = useState(false);
   const [autoVoiceEnabled, setAutoVoiceEnabled] = useState(false);
   const [registrationFlow, setRegistrationFlow] = useState({ active: false, confirming: false });
@@ -599,8 +599,8 @@ function ChatWidget({
     return () => recognition.stop();
   }, [wakeEnabled, config?.deepgramConfigured]);
 
-  async function playVoiceReply(content) {
-    if (!voiceReply) return;
+  async function playVoiceReply(content, { force = false } = {}) {
+    if (!force && !voiceReply) return;
 
     conversationBusyRef.current = true;
     isSpeakingRef.current = true;
@@ -767,6 +767,7 @@ function ChatWidget({
     isCapturingRef.current = false;
     isSpeakingRef.current = false;
     setAutoVoiceEnabled(false);
+    setVoiceReply(false);
     stopSpeakingNow();
 
     if (vadFrameRef.current) {
@@ -921,6 +922,7 @@ function ChatWidget({
     setVoiceError("");
     setLiveTranscript("");
     setOpen(true);
+    setVoiceReply(true);
 
     if (autoVoiceRef.current) return;
 
@@ -957,7 +959,7 @@ function ChatWidget({
 
       const dataArray = new Uint8Array(analyser.fftSize);
       monitorVoice(dataArray);
-      if (voiceReply) void playVoiceReply("How can I help you today?");
+      void playVoiceReply("How can I help you today?", { force: true });
     } catch {
       setVoiceStatus("idle");
       setAssistantState("idle");
@@ -1063,39 +1065,40 @@ function ChatWidget({
         type="button"
         onClick={() => {
           setOpen(true);
-          void startNaturalConversation();
         }}
         aria-label="Open Eventforce chatbot"
       >
         <VeloAssistantMark />
         <span className="launcher-copy">
           <strong>Ask Velo</strong>
-          <small>AI event concierge</small>
+          <small>Text chat</small>
         </span>
         <Sparkles size={16} className="launcher-spark" />
       </button>
 
-      <div className={cls("voice-orb", assistantState, wakeEnabled && "wake-on")} aria-label="Velo voice assistant status">
-        <span />
-        <div>
-          <strong>{autoVoiceEnabled ? "Velo listening" : wakeEnabled ? "Say Velo" : "Velo idle"}</strong>
-          <small>
-            {voiceStatus === "capturing"
-              ? "Heard you speaking"
-              : voiceStatus === "transcribing"
-                ? "Understanding"
-                : voiceStatus === "processing"
-                  ? "Processing"
-                : voiceStatus === "speaking"
-                  ? "Speaking, interrupt anytime"
-                  : assistantState === "searching"
-                    ? "Searching the web"
-                    : assistantState === "listening"
-                      ? "Listening"
-                      : "Ready"}
-          </small>
+      {(autoVoiceEnabled || wakeEnabled) && (
+        <div className={cls("voice-orb", assistantState, wakeEnabled && "wake-on")} aria-label="Velo voice assistant status">
+          <span />
+          <div>
+            <strong>{autoVoiceEnabled ? "Voice mode on" : "Say Velo"}</strong>
+            <small>
+              {voiceStatus === "capturing"
+                ? "Heard you speaking"
+                : voiceStatus === "transcribing"
+                  ? "Understanding"
+                  : voiceStatus === "processing"
+                    ? "Processing"
+                  : voiceStatus === "speaking"
+                    ? "Speaking, interrupt anytime"
+                    : assistantState === "searching"
+                      ? "Searching the web"
+                      : assistantState === "listening"
+                        ? "Listening"
+                        : "Ready"}
+            </small>
+          </div>
         </div>
-      </div>
+      )}
 
       <section className={cls("chat-widget", open && "open")} aria-label="Eventforce chatbot">
         <div className="chat-topbar">
@@ -1121,7 +1124,7 @@ function ChatWidget({
                           ? "Checking documents"
                           : assistantState === "listening"
                             ? "Listening"
-                            : "Online"}
+                            : "Text chat"}
               </span>
             </div>
           </div>
@@ -1176,7 +1179,7 @@ function ChatWidget({
                     : voiceStatus === "processing"
                       ? "Processing..."
                       : "Conversation on"
-              : "Start natural conversation"}
+              : "Switch to voice mode"}
           </button>
           <button
             type="button"
