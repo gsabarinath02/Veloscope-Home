@@ -16,7 +16,6 @@ import {
   Paperclip,
   Phone,
   QrCode,
-  Radio,
   Search,
   Send,
   Sparkles,
@@ -172,12 +171,20 @@ let activeVoiceAudio = null;
 let activeVoiceAudioUrl = "";
 
 function fallbackSpeakText(text) {
-  if (!("speechSynthesis" in window)) return;
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text.replace(/\s+/g, " ").slice(0, 260));
-  utterance.rate = 0.96;
-  utterance.pitch = 1;
-  window.speechSynthesis.speak(utterance);
+  return new Promise((resolve) => {
+    if (!("speechSynthesis" in window)) {
+      resolve();
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text.replace(/\s+/g, " ").slice(0, 260));
+    utterance.rate = 0.96;
+    utterance.pitch = 1;
+    utterance.onend = resolve;
+    utterance.onerror = resolve;
+    window.speechSynthesis.speak(utterance);
+  });
 }
 
 async function speakText(text, { useDeepgram = true } = {}) {
@@ -195,7 +202,7 @@ async function speakText(text, { useDeepgram = true } = {}) {
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();
 
   if (!useDeepgram) {
-    fallbackSpeakText(cleanText);
+    await fallbackSpeakText(cleanText);
     return;
   }
 
@@ -214,20 +221,36 @@ async function speakText(text, { useDeepgram = true } = {}) {
     activeVoiceAudio = audio;
     activeVoiceAudioUrl = audioUrl;
 
-    const cleanup = () => {
-      if (activeVoiceAudio === audio) activeVoiceAudio = null;
-      if (activeVoiceAudioUrl === audioUrl) {
-        URL.revokeObjectURL(audioUrl);
-        activeVoiceAudioUrl = "";
-      }
-    };
+    await new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (activeVoiceAudio === audio) activeVoiceAudio = null;
+        if (activeVoiceAudioUrl === audioUrl) {
+          URL.revokeObjectURL(audioUrl);
+          activeVoiceAudioUrl = "";
+        }
+      };
 
-    audio.onended = cleanup;
-    audio.onerror = cleanup;
-    await audio.play();
+      audio.onended = () => {
+        cleanup();
+        resolve();
+      };
+      audio.onerror = () => {
+        cleanup();
+        reject(new Error("Audio playback failed"));
+      };
+      audio.play().catch((error) => {
+        cleanup();
+        reject(error);
+      });
+    });
   } catch {
-    fallbackSpeakText(cleanText);
+    await fallbackSpeakText(cleanText);
   }
+}
+
+function getPreferredAudioMimeType() {
+  if (!window.MediaRecorder) return "";
+  return ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((type) => MediaRecorder.isTypeSupported(type)) || "";
 }
 
 function nextMissingField(details) {
@@ -363,17 +386,39 @@ function ChatWidget({
   const [voiceError, setVoiceError] = useState("");
   const [voiceReply, setVoiceReply] = useState(true);
   const [wakeEnabled, setWakeEnabled] = useState(false);
+  const [autoVoiceEnabled, setAutoVoiceEnabled] = useState(false);
   const [registrationFlow, setRegistrationFlow] = useState({ active: false, confirming: false });
   const listRef = useRef(null);
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
   const recognitionRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const analyserRef = useRef(null);
+  const vadFrameRef = useRef(0);
+  const autoVoiceRef = useRef(false);
+  const conversationBusyRef = useRef(false);
+  const isCapturingRef = useRef(false);
+  const lastVoiceAtRef = useRef(0);
+  const segmentStartRef = useRef(0);
+  const isSendingRef = useRef(false);
+  const sendMessageRef = useRef(null);
 
   useEffect(() => {
     if (open) {
       listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
     }
   }, [messages, open]);
+
+  useEffect(() => {
+    isSendingRef.current = isSending;
+  }, [isSending]);
+
+  useEffect(() => {
+    sendMessageRef.current = sendMessage;
+  });
+
+  useEffect(() => () => stopNaturalConversation({ silent: true }), []);
 
   useEffect(() => {
     if (promptToSend) {
@@ -385,7 +430,7 @@ function ChatWidget({
   useEffect(() => {
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!Recognition) {
-      setVoiceStatus("push-to-talk");
+      setVoiceStatus("idle");
       return;
     }
 
@@ -418,20 +463,41 @@ function ChatWidget({
       }
     };
     recognition.onerror = () => {
-      setVoiceStatus("push-to-talk");
+      setVoiceStatus("idle");
     };
     recognition.onend = () => {
       if (wakeEnabled) {
         try {
           recognition.start();
         } catch {
-          setVoiceStatus("push-to-talk");
+          setVoiceStatus("idle");
         }
       }
     };
     recognitionRef.current = recognition;
     return () => recognition.stop();
   }, [wakeEnabled, config?.deepgramConfigured]);
+
+  async function playVoiceReply(content) {
+    if (!voiceReply) return;
+
+    conversationBusyRef.current = true;
+    setVoiceStatus("speaking");
+    setAssistantState("answering");
+    try {
+      await speakText(content, { useDeepgram: config?.deepgramConfigured });
+    } finally {
+      conversationBusyRef.current = false;
+      if (autoVoiceRef.current) {
+        setVoiceStatus("listening");
+        setAssistantState("listening");
+        setLiveTranscript("Listening. Speak naturally, then pause.");
+      } else {
+        setVoiceStatus("idle");
+        setAssistantState("idle");
+      }
+    }
+  }
 
   function appendAssistant(content, options = {}) {
     setMessages((current) => [
@@ -449,7 +515,7 @@ function ChatWidget({
         providerWarning: options.providerWarning
       }
     ]);
-    if (voiceReply) speakText(content, { useDeepgram: config?.deepgramConfigured });
+    if (voiceReply) void playVoiceReply(content);
   }
 
   function updateRegistrationDetails(patch) {
@@ -527,8 +593,8 @@ function ChatWidget({
   function enableWakeWord() {
     const recognition = recognitionRef.current;
     if (!recognition) {
-      setVoiceStatus("push-to-talk");
-      setVoiceError("Wake word is not available in this browser. Use push-to-talk.");
+      setVoiceStatus("idle");
+      setVoiceError("Wake word is not available in this browser. Start conversation mode instead.");
       return;
     }
 
@@ -541,55 +607,190 @@ function ChatWidget({
     }
   }
 
-  async function startRecording() {
+  function stopNaturalConversation({ silent = false } = {}) {
+    autoVoiceRef.current = false;
+    conversationBusyRef.current = false;
+    isCapturingRef.current = false;
+    setAutoVoiceEnabled(false);
+
+    if (vadFrameRef.current) {
+      cancelAnimationFrame(vadFrameRef.current);
+      vadFrameRef.current = 0;
+    }
+
+    if (recorderRef.current?.state === "recording") {
+      recorderRef.current.onstop = null;
+      recorderRef.current.stop();
+    }
+    recorderRef.current = null;
+    chunksRef.current = [];
+
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+
+    audioContextRef.current?.close().catch(() => {});
+    audioContextRef.current = null;
+    analyserRef.current = null;
+
+    setVoiceStatus("idle");
+    setAssistantState("idle");
+    if (!silent) setLiveTranscript("Voice conversation paused.");
+  }
+
+  function resumeNaturalListening() {
+    if (!autoVoiceRef.current) return;
+    conversationBusyRef.current = false;
+    setVoiceStatus("listening");
+    setAssistantState("listening");
+    setLiveTranscript("Listening. Speak naturally, then pause.");
+  }
+
+  async function transcribeVoiceSegment(blob, contentType) {
+    if (!blob.size || blob.size < 1200) {
+      resumeNaturalListening();
+      return;
+    }
+
+    setVoiceStatus("transcribing");
+    setAssistantState("processing");
+    try {
+      const response = await fetch("/api/transcribe", {
+        method: "POST",
+        headers: { "Content-Type": contentType || "audio/webm" },
+        body: blob
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Transcription failed");
+
+      const transcript = normalizeSpeech(payload.transcript || "");
+      setLiveTranscript(transcript || "I did not catch that. Please try again.");
+      if (transcript) {
+        await sendMessageRef.current?.(transcript, { fromVoice: true });
+      } else {
+        resumeNaturalListening();
+      }
+    } catch {
+      setVoiceError(config?.deepgramConfigured ? "I could not understand that audio. Please try again." : "Deepgram key is not configured here.");
+      resumeNaturalListening();
+    }
+  }
+
+  function beginVoiceSegment() {
+    const stream = mediaStreamRef.current;
+    if (!stream || isCapturingRef.current || conversationBusyRef.current) return;
+
+    const mimeType = getPreferredAudioMimeType();
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    chunksRef.current = [];
+    isCapturingRef.current = true;
+    segmentStartRef.current = performance.now();
+    lastVoiceAtRef.current = segmentStartRef.current;
+
+    recorder.ondataavailable = (event) => {
+      if (event.data.size) chunksRef.current.push(event.data);
+    };
+    recorder.onstop = () => {
+      const blobType = mimeType || recorder.mimeType || "audio/webm";
+      const blob = new Blob(chunksRef.current, { type: blobType });
+      chunksRef.current = [];
+      void transcribeVoiceSegment(blob, blobType);
+    };
+
+    recorderRef.current = recorder;
+    recorder.start(250);
+    setVoiceStatus("capturing");
+    setAssistantState("listening");
+    setLiveTranscript("I am listening...");
+  }
+
+  function finishVoiceSegment() {
+    const recorder = recorderRef.current;
+    if (!recorder || recorder.state !== "recording") return;
+
+    isCapturingRef.current = false;
+    conversationBusyRef.current = true;
+    setVoiceStatus("transcribing");
+    setAssistantState("processing");
+    recorder.stop();
+  }
+
+  function monitorVoice(dataArray) {
+    const analyser = analyserRef.current;
+    if (!autoVoiceRef.current || !analyser) return;
+
+    if (!conversationBusyRef.current && !isSendingRef.current) {
+      analyser.getByteTimeDomainData(dataArray);
+      const sum = dataArray.reduce((total, value) => {
+        const normalized = (value - 128) / 128;
+        return total + normalized * normalized;
+      }, 0);
+      const rms = Math.sqrt(sum / dataArray.length);
+      const now = performance.now();
+      const hasVoice = rms > 0.026;
+
+      if (hasVoice) {
+        lastVoiceAtRef.current = now;
+        beginVoiceSegment();
+      } else if (
+        isCapturingRef.current &&
+        now - lastVoiceAtRef.current > 1150 &&
+        now - segmentStartRef.current > 700
+      ) {
+        finishVoiceSegment();
+      }
+    }
+
+    vadFrameRef.current = requestAnimationFrame(() => monitorVoice(dataArray));
+  }
+
+  async function startNaturalConversation() {
     setVoiceError("");
     setLiveTranscript("");
+    setOpen(true);
+
+    if (autoVoiceRef.current) return;
+
     if (!navigator.mediaDevices?.getUserMedia) {
       setVoiceError("Microphone access is not available in this browser.");
       return;
     }
+    if (!window.MediaRecorder) {
+      setVoiceError("Continuous voice capture is not available in this browser.");
+      return;
+    }
 
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
-    chunksRef.current = [];
-    recorder.ondataavailable = (event) => {
-      if (event.data.size) chunksRef.current.push(event.data);
-    };
-    recorder.onstop = async () => {
-      stream.getTracks().forEach((track) => track.stop());
-      setVoiceStatus("transcribing");
-      setAssistantState("processing");
-      try {
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-        const response = await fetch("/api/transcribe", {
-          method: "POST",
-          headers: { "Content-Type": "audio/webm" },
-          body: blob
-        });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "Transcription failed");
-        const transcript = normalizeSpeech(payload.transcript || "");
-        setLiveTranscript(transcript);
-        setInput(transcript);
-        if (transcript) sendMessage(transcript, { fromVoice: true });
-      } catch (error) {
-        setVoiceError(config?.deepgramConfigured ? "Deepgram could not transcribe that audio." : "Deepgram key is not configured here. Use typed input or add DEEPGRAM_API_KEY.");
-        setAssistantState("idle");
-      } finally {
-        setVoiceStatus("idle");
-      }
-    };
-    recorderRef.current = recorder;
-    recorder.start();
-    setVoiceStatus("listening");
-    setAssistantState("listening");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      const audioContext = new AudioContextClass();
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 2048;
+      audioContext.createMediaStreamSource(stream).connect(analyser);
+
+      mediaStreamRef.current = stream;
+      audioContextRef.current = audioContext;
+      analyserRef.current = analyser;
+      autoVoiceRef.current = true;
+      setAutoVoiceEnabled(true);
+      resumeNaturalListening();
+
+      const dataArray = new Uint8Array(analyser.fftSize);
+      monitorVoice(dataArray);
+      if (voiceReply) void playVoiceReply("How can I help you today?");
+    } catch {
+      setVoiceStatus("idle");
+      setAssistantState("idle");
+      setVoiceError("Please allow microphone access to start a natural voice conversation.");
+    }
   }
 
-  function stopRecording() {
-    recorderRef.current?.stop();
-  }
-
-  async function sendMessage(value = input) {
+  async function sendMessage(value = input, options = {}) {
     const question = normalizeSpeech(value).trim();
     if (!question || isSending) return;
 
@@ -627,12 +828,13 @@ function ChatWidget({
       }
 
       const payload = await response.json();
+      const assistantAnswer = payload.answer;
       setMessages((current) => [
         ...current,
         {
           id: crypto.randomUUID(),
           role: "assistant",
-          content: payload.answer,
+          content: assistantAnswer,
           mode: payload.mode,
           sources: payload.sources,
           ticketNumber: payload.ticketNumber,
@@ -642,7 +844,10 @@ function ChatWidget({
           providerWarning: payload.providerWarning
         }
       ]);
-      if (voiceReply) speakText(payload.answer, { useDeepgram: config?.deepgramConfigured });
+      if (voiceReply) {
+        const voicePromise = playVoiceReply(assistantAnswer);
+        if (options.fromVoice) await voicePromise;
+      }
     } catch {
       setMessages((current) => [
         ...current,
@@ -658,7 +863,14 @@ function ChatWidget({
       ]);
     } finally {
       setIsSending(false);
-      setAssistantState("idle");
+      if (!conversationBusyRef.current) {
+        if (autoVoiceRef.current) {
+          setVoiceStatus("listening");
+          setAssistantState("listening");
+        } else {
+          setAssistantState("idle");
+        }
+      }
     }
   }
 
@@ -669,7 +881,15 @@ function ChatWidget({
 
   return (
     <>
-      <button className={cls("chat-launcher", open && "is-open")} type="button" onClick={() => setOpen(true)} aria-label="Open Eventforce chatbot">
+      <button
+        className={cls("chat-launcher", open && "is-open")}
+        type="button"
+        onClick={() => {
+          setOpen(true);
+          void startNaturalConversation();
+        }}
+        aria-label="Open Eventforce chatbot"
+      >
         <VeloAssistantMark />
         <span className="launcher-copy">
           <strong>Ask Velo</strong>
@@ -681,8 +901,20 @@ function ChatWidget({
       <div className={cls("voice-orb", assistantState, wakeEnabled && "wake-on")} aria-label="Velo voice assistant status">
         <span />
         <div>
-          <strong>{wakeEnabled ? "Say Velo" : "Velo idle"}</strong>
-          <small>{assistantState === "searching" ? "Searching the web" : assistantState === "listening" ? "Listening" : assistantState === "processing" ? "Processing voice" : "Ready"}</small>
+          <strong>{autoVoiceEnabled ? "Velo listening" : wakeEnabled ? "Say Velo" : "Velo idle"}</strong>
+          <small>
+            {voiceStatus === "capturing"
+              ? "Heard you speaking"
+              : voiceStatus === "transcribing"
+                ? "Understanding"
+                : voiceStatus === "speaking"
+                  ? "Speaking"
+                  : assistantState === "searching"
+                    ? "Searching the web"
+                    : assistantState === "listening"
+                      ? "Listening"
+                      : "Ready"}
+          </small>
         </div>
       </div>
 
@@ -695,11 +927,31 @@ function ChatWidget({
             <div>
               <strong>Velo Assistant</strong>
               <span>
-                <i /> {assistantState === "searching" ? "Searching the web" : assistantState === "retrieving" ? "Checking documents" : assistantState === "listening" ? "Listening" : "Online"}
+                <i />{" "}
+                {voiceStatus === "speaking"
+                  ? "Speaking"
+                  : voiceStatus === "transcribing"
+                    ? "Understanding voice"
+                    : voiceStatus === "capturing"
+                      ? "Listening to you"
+                      : assistantState === "searching"
+                        ? "Searching the web"
+                        : assistantState === "retrieving"
+                          ? "Checking documents"
+                          : assistantState === "listening"
+                            ? "Listening"
+                            : "Online"}
               </span>
             </div>
           </div>
-          <button type="button" onClick={() => setOpen(false)} aria-label="Close chatbot">
+          <button
+            type="button"
+            onClick={() => {
+              stopNaturalConversation({ silent: true });
+              setOpen(false);
+            }}
+            aria-label="Close chatbot"
+          >
             <X size={21} />
           </button>
         </div>
@@ -727,17 +979,21 @@ function ChatWidget({
         </div>
 
         <div className="voice-panel">
-          <button type="button" onClick={enableWakeWord} className={cls("wake-button", wakeEnabled && "active")}>
-            <Radio size={17} />
-            {wakeEnabled ? "Listening for Velo" : "Enable wake word"}
-          </button>
           <button
             type="button"
-            className={cls("mic-button", voiceStatus === "listening" && "active")}
-            onClick={voiceStatus === "listening" ? stopRecording : startRecording}
+            className={cls("mic-button", "conversation-button", autoVoiceEnabled && "active")}
+            onClick={autoVoiceEnabled ? () => stopNaturalConversation() : startNaturalConversation}
           >
-            {voiceStatus === "listening" ? <MicOff size={18} /> : <Mic size={18} />}
-            {voiceStatus === "listening" ? "Stop" : "Push to talk"}
+            {autoVoiceEnabled ? <MicOff size={18} /> : <Mic size={18} />}
+            {autoVoiceEnabled
+              ? voiceStatus === "capturing"
+                ? "Listening..."
+                : voiceStatus === "transcribing"
+                  ? "Understanding..."
+                  : voiceStatus === "speaking"
+                    ? "Speaking..."
+                    : "Pause conversation"
+              : "Start conversation"}
           </button>
           <button
             type="button"
@@ -750,7 +1006,7 @@ function ChatWidget({
           </button>
           {(liveTranscript || voiceError) && (
             <div className="transcript-line">
-              {voiceStatus === "listening" && <span className="pulse-dot" />}
+              {(voiceStatus === "listening" || voiceStatus === "capturing") && <span className="pulse-dot" />}
               {voiceError || liveTranscript}
             </div>
           )}
@@ -968,7 +1224,7 @@ function RegistrationPanel({ registration, completedRegistration }) {
           <p className="section-kicker">Voice Registration Demo</p>
           <h2>Watch Velo fill the runner form live</h2>
           <p>
-            Say “Velo, register me for the 10K run” or use push-to-talk. The assistant asks one question at a time, fills the form, summarizes the details, and generates a mock QR code after confirmation.
+            Say “Velo, register me for the 10K run” in conversation mode. The assistant listens for your pause, asks one question at a time, fills the form, summarizes the details, and generates a mock QR code after confirmation.
           </p>
           <div className="registration-progress">
             <span style={{ width: `${progress}%` }} />
