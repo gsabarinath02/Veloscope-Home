@@ -1270,12 +1270,68 @@ a {
   color: #9f9a96;
 }
 
+.registration-live-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 38px;
+  margin-top: 18px;
+  padding: 0 13px;
+  border: 1px solid rgba(255, 111, 53, 0.28);
+  border-radius: 999px;
+  color: #f5eee9;
+  background: rgba(255, 111, 53, 0.08);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.registration-live-status span {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #79716c;
+}
+
+.registration-live-status span.active {
+  background: var(--orange-strong);
+  animation: dotPulse 1s infinite;
+}
+
+.registration-live-status span.done {
+  background: #20b36b;
+}
+
 .runner-form-card {
+  position: relative;
   padding: 24px;
+  overflow: hidden;
   border: 1px solid rgba(255, 111, 53, 0.32);
   background: #fffaf7;
   color: #171717;
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.32);
+}
+
+.runner-form-card::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  content: "";
+  background: linear-gradient(90deg, transparent, rgba(252, 76, 2, 0.92), transparent);
+  transform: translateX(-100%);
+}
+
+.runner-form-card.in-progress::before {
+  animation: formScanning 1.6s ease-in-out infinite;
+}
+
+.runner-form-card.submitted {
+  border-color: rgba(32, 179, 107, 0.42);
+}
+
+@keyframes formScanning {
+  50% {
+    transform: translateX(100%);
+  }
 }
 
 .form-card-header {
@@ -1317,9 +1373,16 @@ a {
 }
 
 .runner-form-grid span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   color: #6f625a;
   font-size: 12px;
   font-weight: 800;
+}
+
+.runner-form-grid span svg {
+  color: var(--orange-strong);
 }
 
 .runner-form-grid input {
@@ -1338,6 +1401,23 @@ a {
   animation: fillFlash 0.5s ease;
 }
 
+.runner-form-grid label.active-field input {
+  border-color: var(--orange-strong);
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(252, 76, 2, 0.12);
+  animation: activeFieldPulse 1.1s ease-in-out infinite;
+}
+
+.runner-form-grid label.active-field span {
+  color: #301710;
+}
+
+@keyframes activeFieldPulse {
+  50% {
+    box-shadow: 0 0 0 5px rgba(252, 76, 2, 0.05);
+  }
+}
+
 @keyframes fillFlash {
   0% {
     box-shadow: 0 0 0 0 rgba(252, 76, 2, 0.38);
@@ -1354,8 +1434,11 @@ a {
   align-items: center;
   margin-top: 20px;
   padding: 16px;
-  border: 1px solid rgba(252, 76, 2, 0.28);
-  background: #fff1ea;
+  border: 1px solid rgba(32, 179, 107, 0.26);
+  background:
+    linear-gradient(135deg, rgba(32, 179, 107, 0.1), rgba(255, 111, 53, 0.08)),
+    #fffaf7;
+  animation: successIn 320ms ease both;
 }
 
 .registration-success div {
@@ -1374,7 +1457,7 @@ a {
 }
 
 .registration-success span {
-  color: var(--orange-strong);
+  color: #12824d;
   font-weight: 900;
 }
 
@@ -1383,6 +1466,9 @@ a {
   height: 130px;
   grid-column: 1;
   grid-row: 1;
+  padding: 6px;
+  border: 1px solid rgba(9, 8, 8, 0.1);
+  background: #ffffff;
 }
 
 .registration-success p {
@@ -1391,6 +1477,17 @@ a {
   color: #6a5e57;
   font-size: 13px;
   line-height: 1.5;
+}
+
+@keyframes successIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 @media (max-width: 1024px) {

@@ -149,7 +149,12 @@ function normalizeSpeech(text) {
 
 function isRegistrationIntent(text) {
   const lower = text.toLowerCase();
-  return lower.includes("register") || lower.includes("registration") || lower.includes("sign me up");
+  return (
+    /\b(register me|sign me up|i want to register|want to register|help me register|help me to register|register for|book my slot|enroll me)\b/i.test(lower) ||
+    /\b(complete|start|begin|fill|submit)\b.*\bregistration\b/i.test(lower) ||
+    /\bregistration\b.*\b(form|flow|details)\b/i.test(lower) ||
+    (lower.includes("reassure") && lower.includes("marathon"))
+  );
 }
 
 function inferRaceCategory(text) {
@@ -167,8 +172,101 @@ function inferRaceCategory(text) {
   return "";
 }
 
+function normalizePhoneValue(text) {
+  const plus = text.trim().startsWith("+") ? "+" : "";
+  const digits = text.replace(/[^\d]/g, "");
+  return digits ? `${plus}${digits}` : text.trim();
+}
+
+function normalizeRegistrationValue(fieldKey, text) {
+  const clean = text.trim().replace(/[.?!]+$/g, "");
+  const lower = clean.toLowerCase();
+
+  if (fieldKey === "phone" || fieldKey === "emergencyPhone") {
+    return normalizePhoneValue(clean);
+  }
+
+  if (fieldKey === "email") {
+    const email = clean.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
+    return email || clean.replace(/\s+at\s+/i, "@").replace(/\s+dot\s+/gi, ".").replace(/\s+/g, "");
+  }
+
+  if (fieldKey === "age") {
+    return clean.match(/\d{1,3}/)?.[0] || clean;
+  }
+
+  if (fieldKey === "gender") {
+    if (/\bfemale|woman|girl\b/i.test(lower)) return "Female";
+    if (/\bmale|man|boy\b/i.test(lower)) return "Male";
+    if (/\bnon binary|non-binary|other\b/i.test(lower)) return "Other";
+    return clean;
+  }
+
+  if (fieldKey === "raceCategory") {
+    return inferRaceCategory(clean) || clean;
+  }
+
+  if (fieldKey === "tshirtSize") {
+    if (/\bextra small|xs\b/i.test(lower)) return "XS";
+    if (/\bsmall|size s\b/i.test(lower)) return "S";
+    if (/\bmedium|size m\b/i.test(lower)) return "M";
+    if (/\blarge|size l\b/i.test(lower)) return "L";
+    if (/\bextra large|xl\b/i.test(lower)) return "XL";
+    if (/\bxxl|2xl\b/i.test(lower)) return "XXL";
+    return clean.toUpperCase();
+  }
+
+  if (fieldKey === "fullName") {
+    return clean.replace(/^(my name is|this is|i am|i'm)\s+/i, "").trim();
+  }
+
+  if (fieldKey === "emergencyName") {
+    return clean.replace(/^(it is|it's|my emergency contact is|emergency contact is)\s+/i, "").trim();
+  }
+
+  return clean;
+}
+
+function summarizeRegistration(details) {
+  return [
+    `Name: ${details.fullName}`,
+    `Phone: ${details.phone}`,
+    `Email: ${details.email}`,
+    `Age: ${details.age}`,
+    `Gender: ${details.gender}`,
+    `Race: ${details.raceCategory}`,
+    `T-shirt: ${details.tshirtSize}`,
+    `Emergency contact: ${details.emergencyName} (${details.emergencyPhone})`
+  ].join("\n");
+}
+
 let activeVoiceAudio = null;
 let activeVoiceAudioUrl = "";
+let activeSpeechStop = null;
+
+function releaseActiveAudio(audio, audioUrl) {
+  if (activeVoiceAudio === audio) activeVoiceAudio = null;
+  if (activeVoiceAudioUrl === audioUrl) {
+    URL.revokeObjectURL(audioUrl);
+    activeVoiceAudioUrl = "";
+  }
+}
+
+function stopSpeakingNow() {
+  const stop = activeSpeechStop;
+  activeSpeechStop = null;
+
+  if (activeVoiceAudio) {
+    activeVoiceAudio.pause();
+    activeVoiceAudio = null;
+  }
+  if (activeVoiceAudioUrl) {
+    URL.revokeObjectURL(activeVoiceAudioUrl);
+    activeVoiceAudioUrl = "";
+  }
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  if (stop) stop();
+}
 
 function fallbackSpeakText(text) {
   return new Promise((resolve) => {
@@ -181,8 +279,20 @@ function fallbackSpeakText(text) {
     const utterance = new SpeechSynthesisUtterance(text.replace(/\s+/g, " ").slice(0, 260));
     utterance.rate = 0.96;
     utterance.pitch = 1;
-    utterance.onend = resolve;
-    utterance.onerror = resolve;
+    const finish = () => {
+      if (activeSpeechStop === cancel) activeSpeechStop = null;
+      resolve();
+    };
+    const cancel = () => {
+      utterance.onend = null;
+      utterance.onerror = null;
+      window.speechSynthesis.cancel();
+      resolve();
+    };
+
+    activeSpeechStop = cancel;
+    utterance.onend = finish;
+    utterance.onerror = finish;
     window.speechSynthesis.speak(utterance);
   });
 }
@@ -191,15 +301,7 @@ async function speakText(text, { useDeepgram = true } = {}) {
   const cleanText = String(text || "").replace(/\s+/g, " ").trim().slice(0, 900);
   if (!cleanText) return;
 
-  if (activeVoiceAudio) {
-    activeVoiceAudio.pause();
-    activeVoiceAudio = null;
-  }
-  if (activeVoiceAudioUrl) {
-    URL.revokeObjectURL(activeVoiceAudioUrl);
-    activeVoiceAudioUrl = "";
-  }
-  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  stopSpeakingNow();
 
   if (!useDeepgram) {
     await fallbackSpeakText(cleanText);
@@ -223,13 +325,18 @@ async function speakText(text, { useDeepgram = true } = {}) {
 
     await new Promise((resolve, reject) => {
       const cleanup = () => {
-        if (activeVoiceAudio === audio) activeVoiceAudio = null;
-        if (activeVoiceAudioUrl === audioUrl) {
-          URL.revokeObjectURL(audioUrl);
-          activeVoiceAudioUrl = "";
-        }
+        releaseActiveAudio(audio, audioUrl);
+        if (activeSpeechStop === cancel) activeSpeechStop = null;
+      };
+      const cancel = () => {
+        audio.onended = null;
+        audio.onerror = null;
+        audio.pause();
+        cleanup();
+        resolve();
       };
 
+      activeSpeechStop = cancel;
       audio.onended = () => {
         cleanup();
         resolve();
@@ -372,6 +479,7 @@ function ChatWidget({
   registration,
   onRegistrationDraft,
   onRegistrationComplete,
+  onRegistrationFieldChange,
   config,
   promptToSend,
   onPromptConsumed
@@ -389,6 +497,8 @@ function ChatWidget({
   const [autoVoiceEnabled, setAutoVoiceEnabled] = useState(false);
   const [registrationFlow, setRegistrationFlow] = useState({ active: false, confirming: false });
   const listRef = useRef(null);
+  const registrationRef = useRef(registration);
+  const registrationFlowRef = useRef(registrationFlow);
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
   const recognitionRef = useRef(null);
@@ -399,6 +509,9 @@ function ChatWidget({
   const autoVoiceRef = useRef(false);
   const conversationBusyRef = useRef(false);
   const isCapturingRef = useRef(false);
+  const isSpeakingRef = useRef(false);
+  const speechStartedAtRef = useRef(0);
+  const bargeInCooldownRef = useRef(0);
   const lastVoiceAtRef = useRef(0);
   const segmentStartRef = useRef(0);
   const isSendingRef = useRef(false);
@@ -413,6 +526,14 @@ function ChatWidget({
   useEffect(() => {
     isSendingRef.current = isSending;
   }, [isSending]);
+
+  useEffect(() => {
+    registrationRef.current = registration;
+  }, [registration]);
+
+  useEffect(() => {
+    registrationFlowRef.current = registrationFlow;
+  }, [registrationFlow]);
 
   useEffect(() => {
     sendMessageRef.current = sendMessage;
@@ -482,16 +603,20 @@ function ChatWidget({
     if (!voiceReply) return;
 
     conversationBusyRef.current = true;
+    isSpeakingRef.current = true;
+    speechStartedAtRef.current = performance.now();
     setVoiceStatus("speaking");
     setAssistantState("answering");
     try {
       await speakText(content, { useDeepgram: config?.deepgramConfigured });
     } finally {
+      isSpeakingRef.current = false;
       conversationBusyRef.current = false;
+      if (isCapturingRef.current) return;
       if (autoVoiceRef.current) {
         setVoiceStatus("listening");
         setAssistantState("listening");
-        setLiveTranscript("Listening. Speak naturally, then pause.");
+        setLiveTranscript("Listening. You can interrupt Velo anytime.");
       } else {
         setVoiceStatus("idle");
         setAssistantState("idle");
@@ -519,29 +644,39 @@ function ChatWidget({
   }
 
   function updateRegistrationDetails(patch) {
-    onRegistrationDraft((current) => ({ ...current, ...patch }));
+    onRegistrationDraft((current) => {
+      const next = { ...current, ...patch };
+      registrationRef.current = next;
+      return next;
+    });
   }
 
   function startRegistration(question) {
     document.getElementById("registration")?.scrollIntoView({ behavior: "smooth", block: "start" });
     const raceCategory = inferRaceCategory(question);
     const draft = {
-      ...registration,
-      raceCategory: raceCategory || registration.raceCategory
+      ...registrationRef.current,
+      raceCategory: raceCategory || registrationRef.current.raceCategory
     };
+    registrationRef.current = draft;
+    onRegistrationComplete(null);
     onRegistrationDraft(draft);
-    setRegistrationFlow({ active: true, confirming: false });
     const nextField = nextMissingField(draft);
-    const answer = `Registration is currently open for Kochi Half Marathon 2026. I can help you register. ${nextField?.question || "Please confirm the details."}`;
+    const flow = { active: true, confirming: false, activeField: nextField?.key || "" };
+    registrationFlowRef.current = flow;
+    setRegistrationFlow(flow);
+    onRegistrationFieldChange(nextField?.key || "");
+    const answer = `Registration is currently open for Kochi Half Marathon 2026. I will fill the form as you answer. ${nextField?.question || "Please confirm the details."}`;
     appendAssistant(answer, { mode: "registration" });
     return true;
   }
 
   async function continueRegistration(answerText) {
     const cleanAnswer = answerText.trim();
-    if (!registrationFlow.active) return false;
+    const flowState = registrationFlowRef.current;
+    if (!flowState.active) return false;
 
-    if (registrationFlow.confirming) {
+    if (flowState.confirming) {
       if (!/^(yes|confirm|confirmed|ok|okay|submit|proceed)/i.test(cleanAnswer)) {
         appendAssistant("No problem. Tell me which detail you want to change, or say confirm when you are ready.", {
           mode: "registration"
@@ -550,40 +685,59 @@ function ChatWidget({
       }
 
       setAssistantState("processing");
+      setVoiceStatus("processing");
+      const details = registrationRef.current;
       const response = await fetch("/api/registrations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ details: registration })
+        body: JSON.stringify({ details })
       });
+      if (!response.ok) throw new Error("Registration submission failed");
       const payload = await response.json();
       onRegistrationComplete(payload);
       document.getElementById("registration")?.scrollIntoView({ behavior: "smooth", block: "start" });
-      setRegistrationFlow({ active: false, confirming: false });
+      const closedFlow = { active: false, confirming: false, activeField: "" };
+      registrationFlowRef.current = closedFlow;
+      setRegistrationFlow(closedFlow);
+      onRegistrationFieldChange("");
       setAssistantState("answering");
       appendAssistant(
-        `Registration confirmed. Your mock registration ID is ${payload.id}. I generated a QR code for bib collection. In demo mode, payment is marked as pending so you can show the payment step separately.`,
+        `Registration submitted. Your mock registration ID is ${payload.id}. I generated the QR code for bib collection. Payment is marked as demo pending for this walkthrough.`,
         { mode: "registration" }
       );
       return true;
     }
 
-    const field = nextMissingField(registration);
+    const currentDetails = registrationRef.current;
+    const field = registrationFields.find((item) => item.key === flowState.activeField) || nextMissingField(currentDetails);
     if (!field) {
-      setRegistrationFlow({ active: true, confirming: true });
-      appendAssistant("I have all the details. Please review the registration panel and say confirm to generate your registration ID and QR code.", {
+      const confirmingFlow = { active: true, confirming: true, activeField: "" };
+      registrationFlowRef.current = confirmingFlow;
+      setRegistrationFlow(confirmingFlow);
+      onRegistrationFieldChange("");
+      appendAssistant(`I have all the details. Please review the registration panel and say confirm to generate your registration ID and QR code.\n\n${summarizeRegistration(currentDetails)}`, {
         mode: "registration"
       });
       return true;
     }
 
-    updateRegistrationDetails({ [field.key]: cleanAnswer });
-    const updated = { ...registration, [field.key]: cleanAnswer };
+    const fieldValue = normalizeRegistrationValue(field.key, cleanAnswer);
+    const updated = { ...currentDetails, [field.key]: fieldValue };
+    registrationRef.current = updated;
+    updateRegistrationDetails({ [field.key]: fieldValue });
     const nextField = nextMissingField(updated);
     if (nextField) {
+      const nextFlow = { active: true, confirming: false, activeField: nextField.key };
+      registrationFlowRef.current = nextFlow;
+      setRegistrationFlow(nextFlow);
+      onRegistrationFieldChange(nextField.key);
       appendAssistant(nextField.question, { mode: "registration" });
     } else {
-      setRegistrationFlow({ active: true, confirming: true });
-      appendAssistant("I have all the details. Please review the registration panel and say confirm to generate your registration ID and QR code.", {
+      const confirmingFlow = { active: true, confirming: true, activeField: "" };
+      registrationFlowRef.current = confirmingFlow;
+      setRegistrationFlow(confirmingFlow);
+      onRegistrationFieldChange("");
+      appendAssistant(`I have all the details. Please review the registration panel and say confirm to generate your registration ID and QR code.\n\n${summarizeRegistration(updated)}`, {
         mode: "registration"
       });
     }
@@ -611,7 +765,9 @@ function ChatWidget({
     autoVoiceRef.current = false;
     conversationBusyRef.current = false;
     isCapturingRef.current = false;
+    isSpeakingRef.current = false;
     setAutoVoiceEnabled(false);
+    stopSpeakingNow();
 
     if (vadFrameRef.current) {
       cancelAnimationFrame(vadFrameRef.current);
@@ -646,7 +802,7 @@ function ChatWidget({
   }
 
   async function transcribeVoiceSegment(blob, contentType) {
-    if (!blob.size || blob.size < 1200) {
+    if (!blob.size || blob.size < 800) {
       resumeNaturalListening();
       return;
     }
@@ -697,7 +853,7 @@ function ChatWidget({
     };
 
     recorderRef.current = recorder;
-    recorder.start(250);
+    recorder.start(180);
     setVoiceStatus("capturing");
     setAssistantState("listening");
     setLiveTranscript("I am listening...");
@@ -718,23 +874,41 @@ function ChatWidget({
     const analyser = analyserRef.current;
     if (!autoVoiceRef.current || !analyser) return;
 
-    if (!conversationBusyRef.current && !isSendingRef.current) {
-      analyser.getByteTimeDomainData(dataArray);
-      const sum = dataArray.reduce((total, value) => {
-        const normalized = (value - 128) / 128;
-        return total + normalized * normalized;
-      }, 0);
-      const rms = Math.sqrt(sum / dataArray.length);
-      const now = performance.now();
-      const hasVoice = rms > 0.026;
+    analyser.getByteTimeDomainData(dataArray);
+    let sum = 0;
+    for (const value of dataArray) {
+      const normalized = (value - 128) / 128;
+      sum += normalized * normalized;
+    }
+    const rms = Math.sqrt(sum / dataArray.length);
+    const now = performance.now();
+    const hasVoice = rms > 0.026;
+    const hasBargeInVoice = rms > 0.038;
 
+    if (
+      isSpeakingRef.current &&
+      hasBargeInVoice &&
+      !isSendingRef.current &&
+      !isCapturingRef.current &&
+      now - speechStartedAtRef.current > 650 &&
+      now - bargeInCooldownRef.current > 900
+    ) {
+      bargeInCooldownRef.current = now;
+      stopSpeakingNow();
+      isSpeakingRef.current = false;
+      conversationBusyRef.current = false;
+      setVoiceStatus("capturing");
+      setAssistantState("listening");
+      setLiveTranscript("I heard you. Go ahead.");
+      beginVoiceSegment();
+    } else if (!conversationBusyRef.current && !isSendingRef.current) {
       if (hasVoice) {
         lastVoiceAtRef.current = now;
         beginVoiceSegment();
       } else if (
         isCapturingRef.current &&
-        now - lastVoiceAtRef.current > 1150 &&
-        now - segmentStartRef.current > 700
+        now - lastVoiceAtRef.current > 720 &&
+        now - segmentStartRef.current > 420
       ) {
         finishVoiceSegment();
       }
@@ -770,7 +944,8 @@ function ChatWidget({
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       const audioContext = new AudioContextClass();
       const analyser = audioContext.createAnalyser();
-      analyser.fftSize = 2048;
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.2;
       audioContext.createMediaStreamSource(stream).connect(analyser);
 
       mediaStreamRef.current = stream;
@@ -792,7 +967,8 @@ function ChatWidget({
 
   async function sendMessage(value = input, options = {}) {
     const question = normalizeSpeech(value).trim();
-    if (!question || isSending) return;
+    if (!question || isSendingRef.current) return;
+    isSendingRef.current = true;
 
     const userMessage = {
       id: crypto.randomUUID(),
@@ -806,7 +982,7 @@ function ChatWidget({
     setOpen(true);
 
     try {
-      if (registrationFlow.active) {
+      if (registrationFlowRef.current.active) {
         await continueRegistration(question);
         return;
       }
@@ -863,6 +1039,7 @@ function ChatWidget({
       ]);
     } finally {
       setIsSending(false);
+      isSendingRef.current = false;
       if (!conversationBusyRef.current) {
         if (autoVoiceRef.current) {
           setVoiceStatus("listening");
@@ -907,8 +1084,10 @@ function ChatWidget({
               ? "Heard you speaking"
               : voiceStatus === "transcribing"
                 ? "Understanding"
+                : voiceStatus === "processing"
+                  ? "Processing"
                 : voiceStatus === "speaking"
-                  ? "Speaking"
+                  ? "Speaking, interrupt anytime"
                   : assistantState === "searching"
                     ? "Searching the web"
                     : assistantState === "listening"
@@ -932,6 +1111,8 @@ function ChatWidget({
                   ? "Speaking"
                   : voiceStatus === "transcribing"
                     ? "Understanding voice"
+                    : voiceStatus === "processing"
+                      ? "Processing"
                     : voiceStatus === "capturing"
                       ? "Listening to you"
                       : assistantState === "searching"
@@ -991,9 +1172,11 @@ function ChatWidget({
                 : voiceStatus === "transcribing"
                   ? "Understanding..."
                   : voiceStatus === "speaking"
-                    ? "Speaking..."
-                    : "Pause conversation"
-              : "Start conversation"}
+                    ? "Speaking - interrupt anytime"
+                    : voiceStatus === "processing"
+                      ? "Processing..."
+                      : "Conversation on"
+              : "Start natural conversation"}
           </button>
           <button
             type="button"
@@ -1213,7 +1396,7 @@ function AnimatedStat({ item, active, index }) {
   );
 }
 
-function RegistrationPanel({ registration, completedRegistration }) {
+function RegistrationPanel({ registration, completedRegistration, activeFieldKey }) {
   const completeCount = registrationFields.filter((field) => String(registration[field.key] || "").trim()).length;
   const progress = Math.round((completeCount / registrationFields.length) * 100);
 
@@ -1230,19 +1413,35 @@ function RegistrationPanel({ registration, completedRegistration }) {
             <span style={{ width: `${progress}%` }} />
           </div>
           <small>{completeCount} of {registrationFields.length} fields complete</small>
+          <div className="registration-live-status">
+            <span className={completedRegistration ? "done" : activeFieldKey || completeCount === registrationFields.length ? "active" : ""} />
+            {completedRegistration
+              ? "QR generated and registration stored"
+              : activeFieldKey
+                ? `Velo is asking for ${registrationFields.find((field) => field.key === activeFieldKey)?.label.toLowerCase()}`
+                : completeCount === registrationFields.length
+                  ? "Review the details and say confirm"
+                : "Start a registration prompt to watch the form fill live"}
+          </div>
         </div>
-        <div className="runner-form-card">
+        <div className={cls("runner-form-card", activeFieldKey && "in-progress", completedRegistration && "submitted")}>
           <div className="form-card-header">
             <UserRound size={22} />
             <div>
               <strong>{registration.eventName}</strong>
-              <span>Demo registration form</span>
+              <span>{completedRegistration ? "Submitted demo registration" : "Live voice-filled form"}</span>
             </div>
           </div>
           <div className="runner-form-grid">
             {registrationFields.map((field) => (
-              <label key={field.key} className={registration[field.key] ? "filled" : ""}>
-                <span>{field.label}</span>
+              <label
+                key={field.key}
+                className={cls(registration[field.key] && "filled", activeFieldKey === field.key && "active-field")}
+              >
+                <span>
+                  {registration[field.key] ? <CheckCircle2 size={14} /> : null}
+                  {field.label}
+                </span>
                 <input value={registration[field.key] || ""} readOnly placeholder="Waiting for voice input" />
               </label>
             ))}
@@ -1323,6 +1522,7 @@ export default function App() {
   const [promptToSend, setPromptToSend] = useState("");
   const [registration, setRegistration] = useState(emptyRegistration);
   const [completedRegistration, setCompletedRegistration] = useState(null);
+  const [activeRegistrationField, setActiveRegistrationField] = useState("");
 
   useEffect(() => {
     fetch("/api/config")
@@ -1345,7 +1545,11 @@ export default function App() {
         <About />
         <Services />
         <EventsBlock />
-        <RegistrationPanel registration={registration} completedRegistration={completedRegistration} />
+        <RegistrationPanel
+          registration={registration}
+          completedRegistration={completedRegistration}
+          activeFieldKey={activeRegistrationField}
+        />
         <TryAsking onPrompt={runPrompt} />
         <ContactFooter />
       </main>
@@ -1355,6 +1559,7 @@ export default function App() {
         registration={registration}
         onRegistrationDraft={setRegistration}
         onRegistrationComplete={setCompletedRegistration}
+        onRegistrationFieldChange={setActiveRegistrationField}
         config={config}
         promptToSend={promptToSend}
         onPromptConsumed={() => setPromptToSend("")}
